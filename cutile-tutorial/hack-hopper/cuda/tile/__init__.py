@@ -1253,16 +1253,32 @@ def _run_interpreter_mode(kernel_func, grid, args):
         return _ctx.block_id[dim]
 
     def _load(array, index, shape, **kwargs):
+        # Handle scalar load: shape=() means load a single element
+        if shape == () or (isinstance(shape, tuple) and len(shape) == 0):
+            # Scalar load - just index into the array
+            idx = tuple(index)
+            return array[idx]
+
         ndim = len(index)
         slices = []
         for i in range(ndim):
-            start = index[i] * shape[i]
-            end = start + shape[i]
-            if i < array.ndim:
-                end = _builtin_min(end, array.shape[i])
-            slices.append(slice(start, end))
+            tile_idx = index[i]
+            tile_size = shape[i] if i < len(shape) else 1
+
+            # If tile_size is 0, this dimension uses direct indexing
+            if tile_size == 0:
+                slices.append(tile_idx)
+            else:
+                start = tile_idx * tile_size
+                end = start + tile_size
+                if i < array.ndim:
+                    end = _builtin_min(end, array.shape[i])
+                slices.append(slice(start, end))
+
         tile = array[tuple(slices)]
-        if tile.shape != shape:
+
+        # Check if we need to pad
+        if hasattr(tile, 'shape') and tile.shape != shape:
             padded = cp.zeros(shape, dtype=tile.dtype)
             copy_slices = tuple(slice(0, s) for s in tile.shape)
             padded[copy_slices] = tile
@@ -1270,12 +1286,29 @@ def _run_interpreter_mode(kernel_func, grid, args):
         return tile
 
     def _store(array, index, tile):
+        # Handle scalar store
+        if not hasattr(tile, 'shape') or tile.shape == ():
+            idx = tuple(index)
+            array[idx] = tile
+            return
+
         ndim = len(index)
-        shape = tile.shape
+        tile_shape = tile.shape
         slices, tile_slices = [], []
+
         for i in range(ndim):
-            start = index[i] * shape[i]
-            end = start + shape[i]
+            tile_idx = index[i]
+            # Get tile size for this dimension
+            tile_size = tile_shape[i] if i < len(tile_shape) else 1
+
+            if tile_size == 0 or tile_size == 1:
+                # Direct indexing for this dimension
+                start = tile_idx
+                end = tile_idx + (tile_size if tile_size > 0 else 1)
+            else:
+                start = tile_idx * tile_size
+                end = start + tile_size
+
             if i < array.ndim:
                 actual_end = _builtin_min(end, array.shape[i])
                 slices.append(slice(start, actual_end))
@@ -1283,7 +1316,10 @@ def _run_interpreter_mode(kernel_func, grid, args):
             else:
                 slices.append(slice(start, end))
                 tile_slices.append(slice(None))
-        array[tuple(slices)] = tile[tuple(tile_slices)]
+
+        # Squeeze tile if needed to match slice dimensions
+        tile_to_store = tile[tuple(tile_slices)] if tile_slices else tile
+        array[tuple(slices)] = tile_to_store
 
     def _full(shape, value, dtype=None):
         np_dtype = _dtype_to_nptype(dtype) if dtype else None
@@ -1297,29 +1333,94 @@ def _run_interpreter_mode(kernel_func, grid, args):
         np_dtype = _dtype_to_nptype(dtype)
         return tile.astype(np_dtype)
 
-    # Create a fake 'ct' module with working functions
+    def _ones(shape, dtype=None):
+        np_dtype = _dtype_to_nptype(dtype) if dtype else cp.float32
+        return cp.ones(shape, dtype=np_dtype)
+
+    def _transpose(tile, axes=None):
+        return cp.transpose(tile, axes)
+
+    def _reshape(tile, shape):
+        return cp.reshape(tile, shape)
+
+    def _scatter_impl(array, indices, tile, axis=0):
+        cp.put_along_axis(array, indices, tile, axis=axis)
+        return array
+
+    # Create a fake 'ct' module with working functions and data types
     ct_funcs = types.SimpleNamespace(
+        # Core functions
         bid=_bid,
         load=_load,
         store=_store,
         full=_full,
         zeros=_zeros,
+        ones=_ones,
         astype=_astype,
+        transpose=_transpose,
+        reshape=_reshape,
+        # Math functions
         exp=lambda x, **kw: cp.exp(x),
+        exp2=lambda x, **kw: cp.exp2(x),
         log=lambda x: cp.log(x),
+        log2=lambda x: cp.log2(x),
         sqrt=lambda x: cp.sqrt(x),
+        rsqrt=lambda x: 1.0 / cp.sqrt(x),
         sin=lambda x: cp.sin(x),
         cos=lambda x: cp.cos(x),
+        tan=lambda x: cp.tan(x),
+        sinh=lambda x: cp.sinh(x),
+        cosh=lambda x: cp.cosh(x),
         tanh=lambda x: cp.tanh(x),
+        floor=lambda x: cp.floor(x),
+        ceil=lambda x: cp.ceil(x),
         abs=lambda x: cp.abs(x),
+        # Reduction functions
         sum=lambda x, axis=None, keepdims=False: cp.sum(x, axis=axis, keepdims=keepdims),
+        prod=lambda x, axis=None: cp.prod(x, axis=axis),
         max=lambda x, axis=None, keepdims=False: cp.max(x, axis=axis, keepdims=keepdims),
         min=lambda x, axis=None, keepdims=False: cp.min(x, axis=axis, keepdims=keepdims),
+        argmax=lambda x, axis=None: cp.argmax(x, axis=axis),
+        argmin=lambda x, axis=None: cp.argmin(x, axis=axis),
         maximum=lambda x, y: cp.maximum(x, y),
         minimum=lambda x, y: cp.minimum(x, y),
+        # Other functions
         where=lambda c, x, y: cp.where(c, x, y),
         matmul=lambda a, b: cp.matmul(a, b),
+        dot=lambda a, b: cp.dot(a, b),
         arange=lambda *args, **kw: cp.arange(*args),
+        cat=lambda tiles, axis=0: cp.concatenate(tiles, axis=axis),
+        broadcast_to=lambda tile, shape: cp.broadcast_to(tile, shape),
+        expand_dims=lambda tile, axis: cp.expand_dims(tile, axis),
+        squeeze=lambda tile, axis=None: cp.squeeze(tile, axis=axis) if axis is not None else cp.squeeze(tile),
+        permute=lambda tile, axes: cp.transpose(tile, axes),
+        gather=lambda array, indices, axis=0: cp.take(array, indices, axis=axis),
+        scatter=lambda array, indices, tile, axis=0: _scatter_impl(array, indices, tile, axis),
+        extract=lambda tile, indices: tile[indices],
+        bitcast=lambda tile, dtype: tile.view(_dtype_to_nptype(dtype)),
+        pow=lambda x, y: cp.power(x, y),
+        negative=lambda x: -x,
+        cdiv=cdiv,
+        # Data types
+        int8=int8,
+        int16=int16,
+        int32=int32,
+        int64=int64,
+        uint8=uint8,
+        uint16=uint16,
+        uint32=uint32,
+        uint64=uint64,
+        float16=float16,
+        float32=float32,
+        float64=float64,
+        bfloat16=bfloat16,
+        tfloat32=tfloat32,
+        bool_=bool_,
+        # Type annotations (passthrough)
+        Constant=Constant,
+        Array=Array,
+        Scalar=Scalar,
+        Tile=Tile,
     )
 
     # Get the function's globals and inject our ct module
