@@ -9,7 +9,11 @@ Welcome to the Machine Learning Systems course at the University of Edinburgh (S
 git clone <repo-url> && cd edin-mls-26-spring
 
 # 2. Set up the conda environment
-source utils/setup-env.sh
+# Triton-only
+source utils/setup-triton.sh
+
+# cuTile-only
+source utils/setup-cutile.sh
 
 # 3. Verify your environment
 python cutile-tutorial/0-environment/check.py   # For cuTile
@@ -47,7 +51,8 @@ edin-mls-26-spring/
 │   └── test_audio.wav            # Test audio file
 │
 ├── utils/                    # Environment and compatibility tools
-│   ├── setup-env.sh          # Main environment setup script
+│   ├── setup-triton.sh       # Triton-only environment setup
+│   ├── setup-cutile.sh       # cuTile-only environment setup
 │   └── hack.sh               # Compatibility layer for non-Blackwell GPUs
 │
 └── requirements-*.lock       # Platform-specific dependency snapshots
@@ -59,11 +64,16 @@ Follow this recommended progression:
 
 | Phase | What to Do | Goal |
 |-------|------------|------|
-| **1. Setup** | Run `source utils/setup-env.sh` | Get your environment working |
+| **1. Setup** | Run `source utils/setup-triton.sh` or `source utils/setup-cutile.sh` | Get your environment working |
 | **2. Basics** | Complete Lessons 1-3 in `cutile-tutorial/` | Understand GPU execution model |
 | **3. Optimization** | Complete Lessons 4-6 | Learn memory patterns and autotuning |
 | **4. Advanced** | Complete Lesson 7 (Attention) | Master complex kernel patterns |
 | **5. Application** | Work on `hw1-asr/` | Apply skills to real ML task |
+
+## Tutorial README References
+
+- `cutile-tutorial/README.md` — cuTile environment setup and how to run cuTile lessons (including non‑Blackwell hack.sh guidance).
+- `triton-tutorial/README.md` — Triton environment setup and how to run Triton lessons.
 
 ## Tutorial Frameworks
 

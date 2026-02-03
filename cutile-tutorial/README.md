@@ -8,14 +8,13 @@ NVIDIA cuTile Python GPU programming tutorials.
 
 ```bash
 # Run from project root
-bash utils/setup-env.sh
+bash utils/setup-cutile.sh
 ```
 
 This creates a conda environment named `mls` with:
 - CUDA Toolkit (nvidia::cuda)
 - CuPy, cuda-python, cuda-tile
-- HuggingFace (transformers, datasets)
-- PyTorch, Streamlit, etc.
+- NumPy
 
 ### 2. Activate Environment and Configure hack.sh
 

@@ -10,7 +10,7 @@ If you are using the project environment:
 
 ```bash
 # Run from project root
-bash utils/setup-env.sh
+bash utils/setup-triton.sh
 ```
 
 Or install Triton + PyTorch directly:

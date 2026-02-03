@@ -4,7 +4,7 @@ set -eo pipefail
 # =========================
 # Config
 # =========================
-ENV_NAME="mls"  # Machine Learning Systems - shared by cutile-tutorial and hw1
+ENV_NAME="mls"
 PYTHON_VERSION="3.11"
 CUDA_TAG="cuda13x"
 MINICONDA_URL="https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh"
@@ -64,34 +64,27 @@ detect_gpu_arch() {
 		return
 	fi
 
-	# Get GPU name
 	GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -n1)
 	echo "    GPU detected: ${GPU_NAME}"
 
-	# Blackwell GPUs: B100, B200, GB200, RTX 50xx series
-	# Compute Capability 10.0+ (sm_100+)
 	if echo "${GPU_NAME}" | grep -qiE "(B100|B200|GB200|RTX 50|Blackwell)"; then
 		IS_BLACKWELL=true
 		echo "    Architecture: Blackwell (CC 10.x)"
 	else
 		IS_BLACKWELL=false
-		# Try to get compute capability via deviceQuery or python
 		echo "    Architecture: Non-Blackwell (will use Hopper hack)"
 	fi
 }
 
-# =========================
-# Sanity hints (non-fatal)
-# =========================
-echo ">>> Assumptions:"
-echo "    - NVIDIA driver >= r580 (Blackwell) or >= r550 (Hopper)"
-echo "    - CUDA Toolkit >= 13.1"
-echo "    - Blackwell GPU (CC 10.x) or Hopper GPU (CC 9.x with hack)"
+echo ">>> cuTile setup:"
+echo "    - Installs CUDA Toolkit, CuPy, cuda-python, cuda-tile"
+echo "    - Adds CUDA_PATH for CuPy headers"
+echo "    - Optional Hopper hack for non-Blackwell GPUs"
 echo
 
 detect_gpu_arch
 echo
-ask_continue "Proceed with environment setup?"
+ask_continue "Proceed with cuTile setup?"
 
 # =========================
 # Check / Install conda
@@ -114,10 +107,8 @@ else
 	bash "${MINICONDA_INSTALLER}" -b -p "${MINICONDA_INSTALL_DIR}"
 	rm -f "${MINICONDA_INSTALLER}"
 
-	# Activate conda for current session
 	eval "$("${MINICONDA_INSTALL_DIR}/bin/conda" shell.bash hook)"
 
-	# Initialize conda for future shells (both bash and zsh)
 	"${MINICONDA_INSTALL_DIR}/bin/conda" init bash
 	"${MINICONDA_INSTALL_DIR}/bin/conda" init zsh
 	echo ">>> Miniconda installed at ${MINICONDA_INSTALL_DIR}"
@@ -143,10 +134,7 @@ else
 	conda create -y -n "${ENV_NAME}" python="${PYTHON_VERSION}" --override-channels -c conda-forge
 fi
 
-# Activate the environment
-# Note: In non-interactive shells, we need to use conda run or source activate
 if [ "${AUTO_YES}" = true ]; then
-	# For non-interactive mode, set up the environment path directly
 	CONDA_ENV_PATH=$(conda info --envs | grep "^${ENV_NAME} " | awk '{print $NF}')
 	export PATH="${CONDA_ENV_PATH}/bin:${PATH}"
 	export CONDA_PREFIX="${CONDA_ENV_PATH}"
@@ -177,6 +165,9 @@ pip install cuda-python
 # cuTile Python
 pip install cuda-tile
 
+# NumPy (used by most examples)
+pip install numpy
+
 # =========================
 # CUDA Environment Variables
 # =========================
@@ -191,14 +182,12 @@ if [ -n "${CONDA_ENV_PATH}" ]; then
 	SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 	PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-	# Create activation script
 	cat >"${CONDA_ENV_PATH}/etc/conda/activate.d/cutile_env.sh" <<EOF
 #!/bin/bash
 # CUDA_PATH for CuPy to find CUDA headers
 export CUDA_PATH=\${CONDA_PREFIX}/targets/x86_64-linux
 EOF
 
-	# Create deactivation script
 	cat >"${CONDA_ENV_PATH}/etc/conda/deactivate.d/cutile_env.sh" <<'EOF'
 #!/bin/bash
 unset CUDA_PATH
@@ -215,9 +204,7 @@ if [ "${IS_BLACKWELL}" = false ]; then
 	echo "    This uses a CuPy-based compatibility layer instead of tileiras compiler."
 	ask_continue "Apply Hopper hack?"
 
-	# Add hack-hopper to PYTHONPATH in activation script
 	if [ -n "${CONDA_ENV_PATH}" ] && [ -n "${PROJECT_ROOT}" ]; then
-		# Append to existing activation script
 		cat >>"${CONDA_ENV_PATH}/etc/conda/activate.d/cutile_env.sh" <<EOF
 
 # Hopper hack: use CuPy-based compatibility layer for non-Blackwell GPUs
@@ -225,7 +212,6 @@ export CUTILE_HACK_HOPPER_DIR="${PROJECT_ROOT}/utils/hack-hopper"
 export PYTHONPATH="\${CUTILE_HACK_HOPPER_DIR}:\${PYTHONPATH}"
 EOF
 
-		# Append to existing deactivation script
 		cat >>"${CONDA_ENV_PATH}/etc/conda/deactivate.d/cutile_env.sh" <<'EOF'
 
 # Remove hack-hopper from PYTHONPATH
@@ -242,80 +228,53 @@ EOF
 fi
 
 # =========================
-# Optional but recommended
+# Validate key packages (non-fatal)
 # =========================
-echo ">>> Installing optional tooling"
+echo ">>> Validating key packages (cuTile)"
+python - <<'PY'
+import importlib
 
-# NVML access (driver introspection, useful for debugging)
-pip install pynvml
+def check_any(module_names):
+    last_exc = None
+    for module_name in module_names:
+        try:
+            mod = importlib.import_module(module_name)
+            version = getattr(mod, "__version__", "unknown")
+            return True, f"{module_name} {version}"
+        except Exception as exc:
+            last_exc = exc
+    return False, str(last_exc) if last_exc else "not found"
 
-# NumPy (used by almost all examples)
-pip install numpy
+checks = {
+    "cutile": check_any(["cuda_tile", "cutile"]),
+    "cupy": check_any(["cupy"]),
+    "numpy": check_any(["numpy"]),
+}
 
-# =========================
-# HuggingFace & ML Tools (for hw1-asr and beyond)
-# =========================
-echo ">>> Installing HuggingFace ecosystem and ML tools"
-ask_continue "Install HuggingFace (transformers, datasets, etc.) and Streamlit?"
-
-# HuggingFace ecosystem
-pip install transformers datasets huggingface_hub accelerate safetensors
-
-# Streamlit for web apps
-pip install streamlit
-
-# Audio processing (for ASR tasks)
-pip install soundfile librosa
-
-# PyTorch installation (architecture-specific)
-if [ "${IS_BLACKWELL}" = true ]; then
-	echo ">>> Installing PyTorch nightly for Blackwell (sm_120 support)..."
-	# Blackwell (sm_120) requires PyTorch nightly with CUDA 12.8+
-	pip install --pre torch torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128
-
-	# Fix cuda-bindings version conflict
-	# PyTorch nightly installs cuda-bindings 12.x, but cuda-python/cuda-tile need 13.x
-	echo ">>> Fixing cuda-bindings version for cuTile compatibility..."
-	pip install "cuda-bindings~=13.1.1" "cuda-python~=13.1.1" --force-reinstall --quiet
-else
-	# Non-Blackwell: use stable PyTorch with CUDA 12.4
-	pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu124
-fi
-
-# =========================
-# Freeze snapshot
-# =========================
-echo ">>> Writing lock snapshot (requirements.lock)"
-conda list --export >requirements.lock
+print("    Package status:")
+for name in ("cutile", "cupy", "numpy"):
+    ok, info = checks[name]
+    status = "OK" if ok else "FAIL"
+    print(f"    - {name}: {status} ({info})")
+PY
 
 # =========================
 # Done
 # =========================
 echo
 echo "============================================="
-echo " MLS Python environment is ready."
-echo " (Machine Learning Systems - cutile + hw1)"
+echo " cuTile environment is ready."
 echo "============================================="
 echo
 echo "Activate with:"
 echo "  conda activate ${ENV_NAME}"
 echo
 echo "Installed key packages:"
-echo "  CUDA/cuTile stack:"
-echo "    - nvidia::cuda (via conda)"
-echo "    - cupy-${CUDA_TAG}"
-echo "    - cuda-python"
-echo "    - cuda-tile"
-echo
-echo "  HuggingFace & ML:"
-echo "    - transformers, datasets, huggingface_hub, safetensors"
-if [ "${IS_BLACKWELL}" = true ]; then
-	echo "    - torch, torchaudio (nightly, cu128 for Blackwell)"
-else
-	echo "    - torch, torchaudio (stable, cu124)"
-fi
-echo "    - streamlit"
-echo "    - soundfile, librosa"
+echo "  - nvidia::cuda (via conda)"
+echo "  - cupy-${CUDA_TAG}"
+echo "  - cuda-python"
+echo "  - cuda-tile"
+echo "  - numpy"
 echo
 echo "GPU: ${GPU_NAME:-unknown}"
 if [ "${IS_BLACKWELL}" = true ]; then
@@ -324,8 +283,4 @@ else
 	echo "Architecture: Non-Blackwell (CuPy-based compatibility layer)"
 	echo "  PYTHONPATH includes hack-hopper on activation"
 fi
-echo
-echo "NOTE: You may need to restart your shell or run:"
-echo "  source ~/.bashrc  # or ~/.zshrc"
-echo "  conda activate ${ENV_NAME}"
 echo
